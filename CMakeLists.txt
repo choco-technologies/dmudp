@@ -64,17 +64,23 @@ dmod_add_library(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
     src/dmudp.c
 )
 
-target_include_directories(${DMOD_MODULE_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-)
-
 target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# To depend on another module's headers, use:
-#   dmod_link_modules(${DMOD_MODULE_NAME}
-#       other_module@1.0
-#   )
-enable_testing()
+# dmnetif: dmnetif_iface_t, dmudp_receive()'s optional out_iface parameter
+#          - a separately published module, fetched via dmod_link_modules().
+# dmroute: dmip_addr_t's real definition (dmroute_addr_t) - dmip_if alone
+#          doesn't carry its include dir. Also a separately published module.
+# dmlist:  backs dmudp's own receive queue (see src/dmudp.c)
+# dmosi:   mutex guarding that queue, plus a semaphore dmudp_receive() waits
+#          on and dmudp_handle_ip_packet() posts
+dmod_link_modules(${DMOD_MODULE_NAME}
+    dmip
+    dmnetif
+    dmroute
+    dmlist
+    dmosi
+)
+
 add_subdirectory(tests)

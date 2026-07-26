@@ -4,7 +4,8 @@ Welcome to the dmudp module documentation.
 
 ## Contents
 
-- **[api-reference.md](api-reference.md)** - Complete API documentation
+- **[dmudp.md](dmudp.md)** - Overview and rationale
+- **[api-reference.md](api-reference.md)** - Full API reference
 
 ## Quick Reference
 
@@ -15,6 +16,6 @@ Welcome to the dmudp module documentation.
 View documentation using `dmf-man`:
 
 ```bash
-dmf-man dmudp          # Main documentation
-dmf-man dmudp api      # API reference
+dmf-man dmudp                # Main documentation
+dmf-man dmudp api-reference   # API reference
 ```
