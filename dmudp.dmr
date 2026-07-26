@@ -1,10 +1,10 @@
 # DMOD Resource File for dmudp
 # This file specifies where resources should be installed
 #
-# dmudp lives nested under dmnet/lib/dmudp rather than being its own
-# top-level repo, so ${repo_dir}/${build_dir} below (which always resolve
-# to the dmnet repo/build root, not this subdirectory) are prefixed with
-# lib/dmudp - same convention lib/dmarp/dmarp.dmr uses for its own nesting.
+# dmudp is its own top-level repo (previously nested under dmnet/lib/dmudp -
+# see git history for the move), so ${repo_dir}/${build_dir} below already
+# resolve to this repo's own root/build directories, no lib/dmudp prefix
+# needed.
 
 # === Core Module ===
 # Main module file - always installed
@@ -31,8 +31,7 @@ readme=./README.md => ${destination}/${module}/README.md [origin=${repo_dir}/REA
 inc=./include => ${destination}/${module}/include [origin=${repo_dir}/include] [origin=${build_dir}/${module}_defs.h]
 
 # === License ===
-# License file - shared at the dmnet repo root (see lib/dmarp/dmarp.dmr
-# for the same "nested module shares the parent repo's LICENSE" convention)
+# License file - this module's own, at the repo root
 license=./LICENSE => ${destination}/${module}/LICENSE [origin=${repo_dir}/LICENSE]
 
 # Adding itself

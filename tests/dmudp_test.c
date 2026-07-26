@@ -148,8 +148,8 @@ static void feed_udp_packet(dmnetif_iface_t iface, dmip_addr_t src_ip, dmip_addr
     Dmod_Free(frame);
 }
 
-#define TEST_DEVICE_PATH_0 "/null"
-#define TEST_DEVICE_PATH_1 "/null2"
+#define TEST_DEVICE_PATH_0 "/dev/null"
+#define TEST_DEVICE_PATH_1 "/dev/null"
 
 static dmnetif_iface_t g_iface0 = NULL;
 static dmnetif_iface_t g_iface1 = NULL;
