@@ -14,6 +14,19 @@ target_include_directories(${DMOD_MODULE_NAME} PRIVATE
 
 target_link_libraries(${DMOD_MODULE_NAME} dmudp_if)
 
+# dmip/dmnetbridge/dmarp/dmnetif/dmroute: drive dmudp's registered
+# packet_received DIF implementation (via dmip, transitively through
+# dmnetbridge) with hand-built fixture packets, and seed fixture routes/ARP
+# entries for the send-path tests - the same set dmicmp_test.c links for
+# the same reason (see its own tests/CMakeLists.txt comment).
+dmod_link_modules(${DMOD_MODULE_NAME}
+    dmip
+    dmnetbridge
+    dmarp
+    dmnetif
+    dmroute
+)
+
 # Register the test module with ctest - this replays the same two steps CI
 # runs (see .github/templates/ci.yml.template): install the test module's
 # dependencies with dmf-get, then execute it through dmod_loader. The test's

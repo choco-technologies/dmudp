@@ -72,9 +72,30 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# To depend on another module's headers, use:
-#   dmod_link_modules(${DMOD_MODULE_NAME}
-#       other_module@1.0
-#   )
+# dmip:    dmip_send()/_v4_send()/_v4_get_source_address() to transmit,
+#          dmip_checksum() for the pseudo-header checksum,
+#          dmip_v4_parse_header()/_v6_parse_header() to read the enclosing
+#          IP header, dmip_register_protocol()/_unregister_protocol() to
+#          receive (see src/dmudp.c).
+# dmicmp:  dmicmp_v4_send_dest_unreachable() - reports a datagram addressed
+#          to a port nobody's listening on back to its sender (Port
+#          Unreachable), instead of dmudp building the ICMP message itself.
+# dmroute: header-only - dmip.h needs dmroute_addr_t (re-exported as
+#          dmip_addr_t) directly, even though dmudp.c itself never calls a
+#          dmroute_* function.
+# dmnetif: header-only - dmnetif_iface_t, the iface parameter
+#          dmip_protocol_handler_t passes to dmudp_handle_ip_packet() and
+#          dmudp_datagram_handler_t passes on to a bound handler.
+# dmlist:  backs the port-binding registry.
+# dmosi:   mutex guarding that registry.
+dmod_link_modules(${DMOD_MODULE_NAME}
+    dmip
+    dmicmp
+    dmroute
+    dmnetif
+    dmlist
+    dmosi
+)
+
 enable_testing()
 add_subdirectory(tests)

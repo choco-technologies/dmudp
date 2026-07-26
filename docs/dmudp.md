@@ -4,28 +4,28 @@
 
 DMUDP builds and parses UDP segments (RFC 768) - source/destination port,
 length, and a pseudo-header checksum - and sends/receives them. Sending
-calls straight into [dmip](../../dmip)'s family-agnostic `dmip_send()`;
-receiving registers itself with dmip as the handler for UDP's IP protocol
-number (`dmip_register_protocol()`) rather than pulling packets from dmip
-directly - dmip no longer hands packets to whoever asks, it dispatches by
-protocol number (see [dmip.md](../../dmip/docs/dmip.md#protocol-dispatch)).
-Either way, dmudp itself never talks to dmroute, dmarp, or dmnetif
-directly for anything - dmip (and, below it, dmnetbridge) already does
-all of that (route lookup, ARP resolution, frame I/O, fragmentation).
-Building UDP as a thin layer over an IP layer that can already put a
-packet on the wire is the entire reason dmudp exists as its own module
-rather than a few more functions bolted onto dmip.
+calls straight into [dmip](../../dmip)'s family-agnostic-by-destination-
+address `dmip_send()`; receiving registers itself with dmip as the handler
+for UDP's IP protocol number (`dmip_register_protocol()`) rather than
+pulling packets from dmip directly - dmip dispatches by protocol number
+(see [dmip.md](../../dmip/docs/dmip.md#protocol-dispatch)). Either way,
+dmudp itself never talks to dmroute, dmarp, or dmnetif directly for
+anything - dmip (and, below it, dmnetbridge) already does all of that
+(route lookup, ARP resolution, frame I/O, fragmentation). Building UDP as
+a thin layer over an IP layer that can already put a packet on the wire is
+the entire reason dmudp exists as its own module rather than a few more
+functions bolted onto dmip.
 
 ```
 ┌──────────────────────────────────────────────┐
 │                  DMUDP                        │
 │   build/parse/checksum a UDP segment,         │
-│   own receive queue fed by a registered       │
-│   protocol handler, dmudp_send()/_receive()   │
+│   per-port binding registry, dmudp_send()/    │
+│   _bind()/_bind_any()/_unbind()               │
 ├──────────────────────────────────────────────┤
-│                  DMIP                         │
-│   dmip_send(), dmip_checksum(),               │
-│   protocol registration                       │
+│         DMIP                    │   DMICMP    │
+│   dmip_send(), dmip_checksum(), │   Port      │
+│   protocol registration         │   Unreachable│
 ├──────────────────────────────────────────────┤
 │      DMNETBRIDGE / DMROUTE / DMNETIF / DMARP  │
 └──────────────────────────────────────────────┘
@@ -33,21 +33,80 @@ rather than a few more functions bolted onto dmip.
 
 ## One function per direction, not one per family
 
-There is `dmudp_send()` and `dmudp_receive()` - no `dmudp_v4_send()`/
-`_v6_send()`, no `dmudp_v4_receive()`/`_v6_receive()`. A caller sending a
-datagram only ever has one destination address, and that address already
-carries the family that would otherwise decide which of two
-same-shaped functions to call - making the caller repeat that choice via
-the function name too is pure redundancy, not a real API surface. This is
-the same reasoning [dmip.md](../../dmip/docs/dmip.md#family-agnostic-dmip_send)
-gives for `dmip_send()` one layer down - dmudp just carries it one step
-further and drops the per-family functions altogether rather than
-keeping them *and* a wrapper on top.
+There is `dmudp_send()` - no `dmudp_v4_send()`/`_v6_send()`. A caller
+sending a datagram only ever has one destination address, and that
+address already carries the family that would otherwise decide which of
+two same-shaped functions to call - making the caller repeat that choice
+via the function name too is pure redundancy, not a real API surface. This
+is the same reasoning [dmip.md](../../dmip/docs/dmip.md#family-agnostic-dmip_send)
+gives for `dmip_send()` one layer down.
 
-Receiving is, if anything, an even clearer case: which family a datagram
-turns out to be *is* the thing waiting is trying to discover, so it was
-never something a caller could have picked by calling a specific function
-in the first place - `dmudp_receive()` reports it back via `out_family`.
+Receiving works the other way: a bound port's handler is simply called
+with whichever family the datagram actually arrived as (its `src` address
+carries that), rather than a caller having to ask "is anything here yet"
+per family.
+
+## A per-port registry, not a receive queue
+
+Earlier drafts of this module had no port concept at all: a single
+`dmudp_receive()` handed back every datagram regardless of destination
+port, backed by a receive queue (dmlist + semaphore) that the dmip-driven
+handler fed and a blocking caller drained. That shape is gone.
+
+`dmudp_bind(port, handler)` reserves a specific UDP port and registers a
+`dmudp_datagram_handler_t` for it; `dmudp_bind_any(handler, &out_port)`
+does the same but picks the first free port in the ephemeral range
+(`DMUDP_PORT_EPHEMERAL_FIRST`..`DMUDP_PORT_EPHEMERAL_LAST`, RFC 6335's
+dynamic/private range) and reports which one it chose;
+`dmudp_unbind(port)` releases either kind of registration. The registry
+itself is a small `dmlist` of `{ port, handler }` entries guarded by a
+`dmosi_mutex_t` - the same shape
+[dmicmp](../../dmicmp/docs/dmicmp.md#sending-our-own-echo-request-needs-a-different-shape)'s
+own echo-listener table uses, just keyed by UDP port instead of ICMP echo
+identifier.
+
+## No extra thread needed to deliver a datagram
+
+`dmip_register_protocol()`'s callback already runs on whatever thread is
+pumping the interface a packet arrived on (see `dmip_protocol_handler_t`
+in `dmip.h`) - the same thread `dmnetbridge_handle_netif_rx()` uses.
+`dmudp_handle_ip_packet()` parses and checksum-validates the segment on
+that same thread, looks up the bound handler for its destination port, and
+- if one is registered - calls it **right there, inline**, the same
+reasoning [dmicmp.md](../../dmicmp/docs/dmicmp.md#no-extra-thread-needed-to-answer-a-ping)
+gives for answering an Echo Request without a queue or worker thread. A
+handler that wants to reply can just call `dmudp_send()` back from inside
+itself, synchronously, in the same call. A handler that needs the payload
+to outlive the call must copy it out itself - it is only valid for the
+call's duration, the same borrowing rule `dmip_protocol_handler_t` itself
+documents.
+
+## An unbound port gets a Port Unreachable, not silence
+
+A datagram addressed to a port with no `dmudp_bind()`/`_bind_any()`
+registration is, for IPv4, reported back to its sender via
+`dmicmp_v4_send_dest_unreachable(dmicmp_v4_dest_unreachable_port, ...)` -
+exactly the case [dmicmp.h](../../dmicmp/include/dmicmp.h) already
+anticipated and documents dmudp as the motivating use for. This is always
+on - there is no flag to suppress it, the same way `dmicmp`'s own
+default-protocol-handler reply has none.
+
+For IPv6 there is no equivalent: sending an ICMPv6 error needs
+`dmip_v6_send()` (blocked on a missing NDP module, the same gap described
+below), so an unbound-port IPv6 datagram is logged (`DMOD_LOG_WARN`) and
+dropped instead - mirroring exactly how `dmicmp_handle_unclaimed_protocol()`
+handles its own unclaimed-IPv6-protocol case.
+
+## Malformed or checksum-failing traffic is always dropped silently
+
+This is a separate rule from the port-unreachable case above and takes
+priority over it: a segment shorter than `DMUDP_HEADER_LEN`, one whose
+declared `length` field doesn't match the segment actually received, or
+one that fails checksum verification, is dropped with no reply at all -
+regardless of family, regardless of whether the destination port is bound
+or not. Only a *well-formed, checksum-valid* datagram addressed to an
+unbound port earns a Port Unreachable; nothing here dignifies possibly-
+spoofed or corrupted traffic with a reply.
 
 ## Why the source address has to be known up front
 
@@ -67,29 +126,30 @@ checksum against that, then calls `dmip_send()` with an explicit
 
 ## One buffer, no extra copy
 
-Both `dmudp_send()` and `dmudp_v4_checksum_valid()`/`_v6_checksum_valid()`
-build a single buffer shaped `[pseudo-header][UDP header][payload]` and
-run `dmip_checksum()` over the whole thing - the pseudo-header prefix is
-never transmitted, only summed. `dmudp_send()` goes one step further:
-since the segment it needs to send is already sitting right after the
-pseudo-header in that same buffer, it hands `dmip_send()` a pointer into
-the middle of it rather than allocating and copying a second time.
+`dmudp_send()` builds a single buffer shaped `[pseudo-header][UDP
+header][payload]` and runs `dmip_checksum()` over the whole thing - the
+pseudo-header prefix is never transmitted, only summed. It then hands
+`dmip_send()` a pointer into the middle of that same buffer (past the
+pseudo-header) rather than allocating and copying a second time.
+`dmudp_v4_checksum_valid()`/`_v6_checksum_valid()` do the equivalent for a
+received segment: build `[pseudo-header][segment]` once and run
+`dmip_checksum()` over it.
 
 ## IPv4: checksum 0 means "none"; IPv6: checksum is mandatory
 
 RFC 768 lets an IPv4 UDP sender skip the checksum entirely by writing 0 in
 the checksum field. `dmudp_send()` never does this itself (it always
 computes a real checksum, remapping a computed value of exactly 0 to
-0xFFFF per the RFC), but `dmudp_receive()` respects it on the way in for
-an IPv4 datagram - a wire checksum of 0 skips verification rather than
-being treated as a mismatch.
+0xFFFF per the RFC), but the receive path respects it on the way in for an
+IPv4 datagram - a wire checksum of 0 skips verification rather than being
+treated as a mismatch. This exception lives in `dmudp_handle_ip_packet()`,
+not in `dmudp_v4_checksum_valid()` itself, which has no awareness of it at
+all and would report a wire-0 checksum as invalid if asked to check one.
 
 RFC 8200 removed that allowance for IPv6: the checksum is mandatory, so
-for an IPv6 datagram `dmudp_receive()` always calls
-`dmudp_v6_checksum_valid()`, no special-casing for a wire value of 0
-(which would essentially never happen for a real non-empty checksum sum
-anyway, but there's no reason to carve out an exception for it that RFC
-8200 itself doesn't allow).
+for an IPv6 datagram the receive path always calls
+`dmudp_v6_checksum_valid()` unconditionally, no special-casing for a wire
+value of 0.
 
 ## No IPv6 send yet
 
@@ -98,36 +158,15 @@ anyway, but there's no reason to carve out an exception for it that RFC
 MAC via ARP - IPv6 needs the NDP equivalent instead, and there is no NDP
 module in this tree yet (see
 [dmip.md](../../dmip/docs/dmip.md#send--receive)). Receiving has no such
-gap - `dmudp_receive()` handles an inbound IPv6 datagram exactly like an
-IPv4 one, verifying its checksum with `dmudp_v6_checksum_valid()` instead.
-Once `dmip_send()` gains an IPv6 path, `dmudp_send()`'s `dmip_family_v6`
-case follows the exact shape of its existing IPv4 one - no new public
+gap - the receive path handles an inbound IPv6 datagram exactly like an
+IPv4 one (aside from the mandatory-checksum and no-ICMP-error differences
+noted above). Once `dmip_send()` gains an IPv6 path, `dmudp_send()`'s
+IPv6 case follows the exact shape of its existing IPv4 one - no new public
 function needed.
-
-## No socket layer, but not stateless anymore
-
-dmudp has no socket/bind concept - there is no `dmudp_socket_create()`/
-`bind()`/`close()`, no per-port registry, and `dmudp_receive()` hands back
-every datagram regardless of destination port (a caller that wants a
-socket-like abstraction - bind to a port, dispatch by destination port -
-can build it on top of `out_dst_port` itself).
-
-It does now own a small receive queue, though - a change from how this
-module used to work (every call a one-shot send or a one-shot
-wait-and-parse, no globals). That's a direct consequence of dmip no
-longer keeping a general-purpose receive queue of its own (see
-[dmip.md](../../dmip/docs/dmip.md#protocol-dispatch)): once dmip
-dispatches by protocol instead of queuing for whoever asks next, whatever
-wants a pull/wait-style `_receive()` call has to hold onto arrived data
-itself between "dmip handed it a packet" and "a caller actually asked for
-it". `dmudp_handle_ip_packet()` (registered via `dmip_register_protocol(DMIP_PROTO_UDP, ...)`
-in `dmod_init()`) is the same parsing/checksum logic this module always
-had, just triggered by that registration instead of by pulling from dmip -
-see `src/dmudp.c`.
 
 ## Byte buffers, not packed structs
 
-Same reasoning as `dmip.c`/`dmarp.c`: segments are built/parsed as raw
+Same reasoning as `dmip.c`/`dmicmp.c`: segments are built/parsed as raw
 `uint8_t` buffers indexed by hand, not packed C structs - dmod's minimal
 module runtime gives no struct-packing guarantee.
 
@@ -137,12 +176,12 @@ module runtime gives no struct-packing guarantee.
   `_unregister_protocol()` to receive, plus `dmip_checksum()` for the
   pseudo-header checksum and `dmip_v4_get_source_address()`/
   `_v4_next_identification()`
-- `dmroute` - `dmip_addr_t`'s real definition (`dmroute_addr_t`)
-- `dmnetif` - header-only: `dmnetif_iface_t`, passed through to
-  `dmudp_handle_ip_packet()` and out through `dmudp_receive()`'s optional
-  `out_iface` parameter. dmudp.c never calls a `dmnetif_*` function
+- `dmicmp` - `dmicmp_v4_send_dest_unreachable()`, to report a datagram
+  addressed to an unbound port back to its sender as a Port Unreachable
+- `dmroute` - header-only: `dmip_addr_t`'s real definition
+  (`dmroute_addr_t`)
+- `dmnetif` - header-only: `dmnetif_iface_t`, passed through to a bound
+  `dmudp_datagram_handler_t`. dmudp.c never calls a `dmnetif_*` function
   directly - `dmnetbridge` (via dmip) already does all frame I/O
-- `dmlist` - backs dmudp's own receive queue (see "No socket layer, but
-  not stateless anymore" above)
-- `dmosi` - mutex guarding that queue, plus a semaphore `dmudp_receive()`
-  waits on and `dmudp_handle_ip_packet()` posts
+- `dmlist` - backs the port-binding registry
+- `dmosi` - mutex guarding that registry
