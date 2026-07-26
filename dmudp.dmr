@@ -1,10 +1,5 @@
 # DMOD Resource File for dmudp
 # This file specifies where resources should be installed
-#
-# dmudp is its own top-level repo (previously nested under dmnet/lib/dmudp -
-# see git history for the move), so ${repo_dir}/${build_dir} below already
-# resolve to this repo's own root/build directories, no lib/dmudp prefix
-# needed.
 
 # === Core Module ===
 # Main module file - always installed
@@ -31,7 +26,7 @@ readme=./README.md => ${destination}/${module}/README.md [origin=${repo_dir}/REA
 inc=./include => ${destination}/${module}/include [origin=${repo_dir}/include] [origin=${build_dir}/${module}_defs.h]
 
 # === License ===
-# License file - this module's own, at the repo root
+# License file
 license=./LICENSE => ${destination}/${module}/LICENSE [origin=${repo_dir}/LICENSE]
 
 # Adding itself
