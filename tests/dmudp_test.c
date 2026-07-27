@@ -619,3 +619,54 @@ DMOD_TEST_STEP(send_v4_full_path_without_real_driver_returns_eio)
     dmarp_cache_remove(g_iface, &dst);
     dmroute_remove(route);
 }
+
+/**
+ * Documents today's dmudp_send() limitation, independent of
+ * dmudp_send_on_iface() below: g_iface has no route and no IP address
+ * configured anywhere in this file, and nothing adds a default route to
+ * 255.255.255.255 either, so dmip_v4_get_source_address() - called first,
+ * to compute the pseudo-header checksum, before dmip_v4_send() itself is
+ * ever reached - fails with -ENETUNREACH and dmudp_send() returns that
+ * immediately. This is the same "no route yet" case a DHCP client hits
+ * sending its initial DISCOVER, and is exactly what
+ * send_on_iface_no_route_or_ip_does_not_return_enetunreach below shows
+ * dmudp_send_on_iface() avoids.
+ */
+DMOD_TEST_STEP(send_v4_broadcast_without_route_returns_enetunreach)
+{
+    dmip_addr_t dst = make_v4(255, 255, 255, 255);
+    uint8_t payload[4] = { 0 };
+
+    DMOD_TEST_EXPECT_EQ(dmudp_send(&dst, 68, 67, payload, sizeof(payload), DMARP_DEFAULT_TIMEOUT_MS), -ENETUNREACH);
+}
+
+DMOD_TEST_STEP(send_on_iface_rejects_null_iface)
+{
+    dmip_addr_t dst = make_v4(255, 255, 255, 255);
+    uint8_t payload[4] = { 0 };
+
+    DMOD_TEST_EXPECT_EQ(dmudp_send_on_iface(NULL, &dst, 68, 67, payload, sizeof(payload), DMARP_DEFAULT_TIMEOUT_MS), -EINVAL);
+}
+
+/**
+ * The routing-bypass counterpart to send_v4_broadcast_without_route_returns_enetunreach
+ * above: same destination, same iface with no route and no IP address, but
+ * through dmudp_send_on_iface() instead of dmudp_send(). The source address
+ * comes straight from dmnetif_get_ip_address(g_iface, ...) (0.0.0.0, since
+ * no IP is configured - a legitimate v4 checksum input, not an error) and
+ * dmip_v4_send_on_iface() treats the destination as on-link, so this never
+ * sees -ENETUNREACH. The limited broadcast address needs no ARP resolution
+ * either, so this runs all the way to the final dmnetif_send(), which fails
+ * (-EIO) since "/dev/null" never backs a real driver - same tradeoff
+ * send_v4_full_path_without_real_driver_returns_eio above documents for
+ * dmudp_send().
+ */
+DMOD_TEST_STEP(send_on_iface_no_route_or_ip_does_not_return_enetunreach)
+{
+    dmip_addr_t dst = make_v4(255, 255, 255, 255);
+    uint8_t payload[4] = { 0 };
+
+    int result = dmudp_send_on_iface(g_iface, &dst, 68, 67, payload, sizeof(payload), DMARP_DEFAULT_TIMEOUT_MS);
+    DMOD_TEST_EXPECT_NE(result, -ENETUNREACH);
+    DMOD_TEST_EXPECT_EQ(result, -EIO);
+}

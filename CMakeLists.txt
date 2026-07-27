@@ -72,8 +72,8 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# dmip:    dmip_send()/_v4_send()/_v4_get_source_address() to transmit,
-#          dmip_checksum() for the pseudo-header checksum,
+# dmip:    dmip_send()/_v4_send()/_v4_send_on_iface()/_v4_get_source_address()
+#          to transmit, dmip_checksum() for the pseudo-header checksum,
 #          dmip_v4_parse_header()/_v6_parse_header() to read the enclosing
 #          IP header, dmip_register_protocol()/_unregister_protocol() to
 #          receive (see src/dmudp.c).
@@ -83,9 +83,11 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
 # dmroute: header-only - dmip.h needs dmroute_addr_t (re-exported as
 #          dmip_addr_t) directly, even though dmudp.c itself never calls a
 #          dmroute_* function.
-# dmnetif: header-only - dmnetif_iface_t, the iface parameter
-#          dmip_protocol_handler_t passes to dmudp_handle_ip_packet() and
-#          dmudp_datagram_handler_t passes on to a bound handler.
+# dmnetif: dmnetif_iface_t, the iface parameter dmip_protocol_handler_t
+#          passes to dmudp_handle_ip_packet() and dmudp_datagram_handler_t
+#          passes on to a bound handler, plus dmnetif_get_ip_address() -
+#          called directly by dmudp_send_on_iface() to read the source
+#          address to checksum against (see dmudp.h).
 # dmlist:  backs the port-binding registry.
 # dmosi:   mutex guarding that registry.
 dmod_link_modules(${DMOD_MODULE_NAME}

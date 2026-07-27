@@ -15,11 +15,13 @@
  *    g_bind_mutex - the same shape dmicmp.c's own echo listener table
  *    uses, just keyed by UDP port instead of ICMP echo identifier.
  *
- *  - Sending: dmudp_send() builds a single
- *    [pseudo-header][UDP header][payload] buffer, checksums the whole
- *    thing, and hands dmip_send() a pointer into the middle of it (no
- *    second copy) - only the IPv4 path exists, same as dmicmp/dmip's own
- *    IPv6 send gap (no dmip_v6_send() yet).
+ *  - Sending: dmudp_send()/_send_on_iface() share udp_send_common(), which
+ *    builds a single [pseudo-header][UDP header][payload] buffer, checksums
+ *    the whole thing, and hands dmip_send()/dmip_v4_send_on_iface() a
+ *    pointer into the middle of it (no second copy) - only the IPv4 path
+ *    exists, same as dmicmp/dmip's own IPv6 send gap (no dmip_v6_send()
+ *    yet). dmudp_send_on_iface() bypasses routing (see dmudp.h) for
+ *    traffic like a DHCP client's pre-lease broadcast.
  *
  *  - Receiving: dmudp registers dmudp_handle_ip_packet() with dmip for
  *    DMIP_PROTO_UDP (see dmod_init()). A well-formed, checksum-valid
@@ -41,6 +43,7 @@
 #include "dmicmp.h"
 #include "dmlist.h"
 #include "dmosi.h"
+#include "dmnetif.h"
 #include <string.h>
 #include <errno.h>
 
@@ -331,19 +334,30 @@ dmod_dmudp_api_declaration(1.0, void, _unbind, ( uint16_t port ))
  * ========================================================================== */
 
 /**
- * @brief Implementation of dmudp_send() - see dmudp.h
+ * @brief Shared implementation behind dmudp_send()/_send_on_iface()
  *
  * Builds one [pseudo-header][UDP header][payload] buffer, checksums the
- * whole thing, and hands dmip_send() a pointer into the middle of it (past
- * the pseudo-header prefix, which is never transmitted) rather than
- * allocating and copying a second time. Unlike dmicmp's send path (which
- * leaves header.src unset and lets dmip_v4_send() pick it), the source
- * address is needed here *before* the segment can be built - the pseudo-
- * header checksum covers it - so dmip_v4_get_source_address() is called
- * first and the same address is then passed explicitly into dmip_send(),
- * so the two can never disagree.
+ * whole thing, and hands dmip_send()/dmip_v4_send_on_iface() a pointer into
+ * the middle of it (past the pseudo-header prefix, which is never
+ * transmitted) rather than allocating and copying a second time. Unlike
+ * dmicmp's send path (which leaves header.src unset and lets dmip_v4_send()
+ * pick it), the source address is needed here *before* the segment can be
+ * built - the pseudo-header checksum covers it.
+ *
+ * `iface == NULL` is dmudp_send()'s routed behavior: the source address
+ * comes from dmip_v4_get_source_address(), and its error (e.g.
+ * -ENETUNREACH for a destination with no route yet) is returned as-is,
+ * before any buffer is even allocated. `iface != NULL` is
+ * dmudp_send_on_iface()'s routing bypass: the source address comes
+ * straight from dmnetif_get_ip_address() on the given interface - which
+ * never fails the send (an iface with no IP configured yet reports
+ * 0.0.0.0, a legitimate v4 source value for the checksum, same as DHCP's
+ * own initial broadcast) - and the packet goes out via
+ * dmip_v4_send_on_iface(), which treats `dst` as on-link and skips the
+ * dmroute lookup entirely.
  */
-dmod_dmudp_api_declaration(1.0, int, _send, ( const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port, const void* payload, size_t payload_len, uint32_t arp_timeout_ms ))
+static int udp_send_common(dmnetif_iface_t iface, const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port,
+                            const void* payload, size_t payload_len, uint32_t arp_timeout_ms)
 {
     if (dst == NULL || dst_port == 0 || (payload == NULL && payload_len > 0) || payload_len > DMUDP_MAX_PAYLOAD_LEN)
         return -EINVAL;
@@ -353,9 +367,17 @@ dmod_dmudp_api_declaration(1.0, int, _send, ( const dmip_addr_t* dst, uint16_t s
         return -EINVAL;
 
     dmip_addr_t src_ip = { 0 };
-    int result = dmip_v4_get_source_address(dst, &src_ip);
-    if (result != 0)
-        return result;
+    if (iface != NULL)
+    {
+        dmnetif_get_ip_address(iface, &src_ip);
+        src_ip.family = dmip_family_v4;
+    }
+    else
+    {
+        int result = dmip_v4_get_source_address(dst, &src_ip);
+        if (result != 0)
+            return result;
+    }
 
     size_t udp_len = DMUDP_HEADER_LEN + payload_len;
     size_t total = DMUDP_V4_PSEUDO_HEADER_LEN + udp_len;
@@ -388,10 +410,31 @@ dmod_dmudp_api_declaration(1.0, int, _send, ( const dmip_addr_t* dst, uint16_t s
     ip_header.header.v4.src = src_ip;
     ip_header.header.v4.dst = *dst;
 
-    result = dmip_send(&ip_header, segment, udp_len, arp_timeout_ms);
+    int result = (iface != NULL)
+        ? dmip_v4_send_on_iface(iface, &ip_header.header.v4, segment, udp_len, arp_timeout_ms)
+        : dmip_send(&ip_header, segment, udp_len, arp_timeout_ms);
 
     Dmod_Free(buf);
     return result;
+}
+
+/**
+ * @brief Implementation of dmudp_send() - see dmudp.h
+ */
+dmod_dmudp_api_declaration(1.0, int, _send, ( const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port, const void* payload, size_t payload_len, uint32_t arp_timeout_ms ))
+{
+    return udp_send_common(NULL, dst, src_port, dst_port, payload, payload_len, arp_timeout_ms);
+}
+
+/**
+ * @brief Implementation of dmudp_send_on_iface() - see dmudp.h
+ */
+dmod_dmudp_api_declaration(1.0, int, _send_on_iface, ( dmnetif_iface_t iface, const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port,
+    const void* payload, size_t payload_len, uint32_t arp_timeout_ms ))
+{
+    if (iface == NULL)
+        return -EINVAL;
+    return udp_send_common(iface, dst, src_port, dst_port, payload, payload_len, arp_timeout_ms);
 }
 
 /* ============================================================================

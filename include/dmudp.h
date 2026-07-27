@@ -49,16 +49,21 @@ extern "C" {
  * reply is sent for possibly-spoofed or corrupt traffic, only for a
  * genuinely well-formed datagram nobody is listening for.
  *
- * dmudp depends on dmip (dmip_send()/_v4_send()/_v4_get_source_address()
- * for transmit, dmip_checksum() for the pseudo-header checksum, protocol
- * registration) and dmicmp (dmicmp_v4_send_dest_unreachable(), for the
- * port-unreachable reply) and, transitively through them, dmroute
- * (dmip_addr_t's real definition) and dmnetif (dmnetif_iface_t) - dmudp
- * itself never calls a dmroute_* /dmnetif_* function directly. Also depends
- * on dmlist (the port-binding registry) and dmosi (the mutex guarding it).
- * Messages are built/parsed as raw byte buffers rather than packed C
- * structs, same reasoning dmip.c/dmicmp.c document for themselves (dmod's
- * minimal module runtime gives no struct-packing guarantee).
+ * dmudp depends on dmip (dmip_send()/_v4_send()/_v4_send_on_iface()/
+ * _v4_get_source_address() for transmit, dmip_checksum() for the
+ * pseudo-header checksum, protocol registration) and dmicmp
+ * (dmicmp_v4_send_dest_unreachable(), for the port-unreachable reply) and,
+ * transitively through them, dmroute (dmip_addr_t's real definition).
+ * dmudp also depends on dmnetif directly - dmnetif_iface_t is threaded
+ * through the receive path and dmudp_send_on_iface()'s `iface` parameter,
+ * and dmnetif_get_ip_address() is called directly to read `iface`'s source
+ * address (see dmudp_send_on_iface()'s own doc comment for why that can't
+ * simply be left to dmip_v4_send_on_iface() the way dmudp_send() leaves it
+ * to dmip_v4_send()). Also depends on dmlist (the port-binding registry)
+ * and dmosi (the mutex guarding it). Messages are built/parsed as raw byte
+ * buffers rather than packed C structs, same reasoning dmip.c/dmicmp.c
+ * document for themselves (dmod's minimal module runtime gives no
+ * struct-packing guarantee).
  */
 
 /* ============================================================================
@@ -280,6 +285,42 @@ dmod_dmudp_api(1.0, void, _unbind, ( uint16_t port ));
  *         (-ENETUNREACH/-ENODEV/-EHOSTUNREACH/-EMSGSIZE/-ENOMEM/-EIO)
  */
 dmod_dmudp_api(1.0, int, _send, ( const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port, const void* payload, size_t payload_len, uint32_t arp_timeout_ms ));
+
+/**
+ * @brief Build, checksum and send a UDP datagram on an explicit interface,
+ *        bypassing routing
+ *
+ * Same wire format as dmudp_send(), but the source address and egress path
+ * come straight from `iface` (dmnetif_get_ip_address()) rather than a
+ * dmroute lookup (dmip_v4_get_source_address()) - `dst` is treated as
+ * on-link on `iface` and handed to dmip_v4_send_on_iface(), which skips
+ * dmroute entirely. This exists for traffic that must go out a specific
+ * interface *before* a route (or even an IP address) exists on it - the
+ * motivating case is a DHCP client sending its initial DISCOVER to
+ * 255.255.255.255 before it has a lease, which dmudp_send() cannot do: it
+ * calls dmip_v4_get_source_address() first (to compute the pseudo-header
+ * checksum) and returns that lookup's error - typically -ENETUNREACH -
+ * before ever reaching dmip_v4_send()'s own unrouted-source fallback.
+ *
+ * @param iface          Interface to transmit on, must not be NULL
+ * @param dst            Destination address
+ * @param src_port       Source port to declare (0 is legal per RFC 768 -
+ *                        a sender with no interest in a reply)
+ * @param dst_port       Destination port, must be nonzero
+ * @param payload        Data to send
+ * @param payload_len    Length of `payload` in bytes, at most
+ *                        DMUDP_MAX_PAYLOAD_LEN
+ * @param arp_timeout_ms Forwarded to dmip_v4_send_on_iface()
+ *
+ * @return 0 on success, -EINVAL (`iface` NULL, NULL/bad `dst`, `dst_port`
+ *         0, oversized payload), -ENOSYS for a dmip_family_v6 `dst` (no
+ *         dmip_v6_send() yet), otherwise whatever dmip_v4_send_on_iface()
+ *         returns (-ENODEV/-EHOSTUNREACH/-EMSGSIZE/-ENOMEM/-EIO) - note
+ *         -ENETUNREACH is never one of them, since routing is bypassed
+ *         entirely
+ */
+dmod_dmudp_api(1.0, int, _send_on_iface, ( dmnetif_iface_t iface, const dmip_addr_t* dst, uint16_t src_port, uint16_t dst_port,
+    const void* payload, size_t payload_len, uint32_t arp_timeout_ms ));
 
 #ifdef __cplusplus
 }
