@@ -556,7 +556,7 @@ int dmod_init(const Dmod_Config_t *Config)
 {
     (void)Config;
 
-    g_bindings = dmlist_create(Dmod_GetCurrentAllocatorName());
+    g_bindings = dmlist_create();
     g_bind_mutex = dmosi_mutex_create(false);
     if (g_bindings == NULL || g_bind_mutex == NULL)
     {
