@@ -23,13 +23,13 @@
  *    yet). dmudp_send_on_iface() bypasses routing (see dmudp.h) for
  *    traffic like a DHCP client's pre-lease broadcast.
  *
- *  - Receiving: dmudp registers dmudp_handle_ip_packet() with dmip for
- *    DMIP_PROTO_UDP (see dmod_init()). A well-formed, checksum-valid
- *    datagram addressed to a bound port is delivered to that port's
- *    handler synchronously, inline, right there on whatever thread is
- *    pumping the interface - no queue, no worker thread, mirroring how
- *    dmicmp answers an Echo Request inline (see dmicmp.h). A datagram
- *    addressed to an unbound port gets an ICMPv4 Port Unreachable via
+ *  - Receiving: dmudp implements dmip's protocol handler DIF (see dmip.h)
+ *    to claim DMIP_PROTO_UDP. A well-formed, checksum-valid datagram
+ *    addressed to a bound port is delivered to that port's handler
+ *    synchronously, inline, right there on whatever thread is pumping the
+ *    interface - no queue, no worker thread, mirroring how dmicmp answers
+ *    an Echo Request inline (see dmicmp.h). A datagram addressed to an
+ *    unbound port gets an ICMPv4 Port Unreachable via
  *    dmicmp_v4_send_dest_unreachable() (IPv6: logged and dropped, no
  *    ICMPv6 send capability yet). Anything malformed or failing checksum
  *    is dropped silently, regardless of family - no ICMP reply for
@@ -478,20 +478,20 @@ static void dispatch_to_port(dmip_family_t family, dmnetif_iface_t iface, const 
 }
 
 /**
- * @brief dmip_protocol_handler_t registered for DMIP_PROTO_UDP - see
- *        dmod_init()
+ * @brief Implementation of dmip's dmip_protocol_receive DIF (see dmip.h) -
+ *        claimed for DMIP_PROTO_UDP by dmudp_protocol_numbers() below
  *
  * Parses `packet`'s IP header to locate the UDP segment and read
  * `src`/`dst`, validates the segment's declared length and checksum
  * (dropping silently on any failure - no ICMP reply for possibly-spoofed
  * or corrupt traffic), then dispatches to whichever port the datagram is
- * addressed to. `packet` is borrowed (see dmip_protocol_handler_t's own
+ * addressed to. `packet` is borrowed (see dmip_protocol_receive()'s own
  * doc comment in dmip.h) - nothing here keeps a pointer into it past the
  * call other than what dispatch_to_port() passes along inline to a
  * handler/dmicmp_v4_send_dest_unreachable(), both of which return before
  * this function does.
  */
-static void dmudp_handle_ip_packet(dmip_family_t family, dmnetif_iface_t iface, const uint8_t* packet, size_t packet_len)
+dmod_dmip_dif_api_declaration(1.0, dmudp, void, _protocol_receive, ( dmip_family_t family, dmnetif_iface_t iface, const uint8_t* packet, size_t packet_len ))
 {
     if (family == dmip_family_v4)
     {
@@ -546,11 +546,29 @@ static void dmudp_handle_ip_packet(dmip_family_t family, dmnetif_iface_t iface, 
     }
 }
 
+/**
+ * @brief Implementation of dmip's dmip_protocol_numbers DIF - dmudp
+ *        claims DMIP_PROTO_UDP unconditionally
+ */
+dmod_dmip_dif_api_declaration(1.0, dmudp, size_t, _protocol_numbers, ( uint16_t* out_protocols, size_t max_protocols ))
+{
+    if (max_protocols == 0)
+        return 0;
+
+    out_protocols[0] = DMIP_PROTO_UDP;
+    return 1;
+}
+
 /* ---- DMOD lifecycle ---- */
 
 /**
  * @brief Module initialization - allocates the port-binding table and its
- *        guarding mutex, then registers with dmip
+ *        guarding mutex
+ *
+ * No registration with dmip needed anymore - dmudp_protocol_receive()/
+ * _protocol_numbers() (above) are discovered by dmip via DIF, on demand,
+ * for as long as this module stays loaded and enabled (see dmip.h's
+ * "Protocol handler DIF" section).
  */
 int dmod_init(const Dmod_Config_t *Config)
 {
@@ -564,25 +582,16 @@ int dmod_init(const Dmod_Config_t *Config)
         return -1;
     }
 
-    int result = dmip_register_protocol(DMIP_PROTO_UDP, dmudp_handle_ip_packet);
-    if (result != 0)
-    {
-        DMOD_LOG_ERROR("dmudp: cannot register as the UDP protocol handler (%d)\n", result);
-        return -1;
-    }
-
     DMOD_LOG_INFO("DMUDP initialized\n");
     return 0;
 }
 
 /**
- * @brief Module deinitialization - unregisters from dmip, frees every
- *        remaining port binding, then the table and mutex
+ * @brief Module deinitialization - frees every remaining port binding,
+ *        then the table and mutex
  */
 int dmod_deinit(void)
 {
-    dmip_unregister_protocol(DMIP_PROTO_UDP);
-
     size_t count = dmlist_size(g_bindings);
     for (size_t i = 0; i < count; i++)
     {

@@ -14,9 +14,10 @@
  * packet straight into dmnetbridge's packet_received DIF implementation
  * via Dmod_GetNextDifModule()/Dmod_GetDifFunction() - the same discovery
  * dmnetbridge_handle_netif_rx() itself uses (see feed_frame()) - which
- * ends up in dmip's real DMIP_PROTO_UDP dispatch and from there in
- * dmudp's real dmudp_handle_ip_packet(). This lets a bound handler's
- * delivery be verified end-to-end without any real network I/O.
+ * ends up in dmip's real protocol dispatch (via DIF discovery) and from
+ * there in dmudp's real dmip_protocol_receive() implementation. This lets
+ * a bound handler's delivery be verified end-to-end without any real
+ * network I/O.
  *
  * Send-path steps can only be verified up through the point dmip_send()
  * itself can be tested without a real driver (route lookup, a hand-seeded

@@ -5,10 +5,10 @@
 DMUDP builds and parses UDP segments (RFC 768) - source/destination port,
 length, and a pseudo-header checksum - and sends/receives them. Sending
 calls straight into [dmip](../../dmip)'s family-agnostic-by-destination-
-address `dmip_send()`; receiving registers itself with dmip as the handler
-for UDP's IP protocol number (`dmip_register_protocol()`) rather than
-pulling packets from dmip directly - dmip dispatches by protocol number
-(see [dmip.md](../../dmip/docs/dmip.md#protocol-dispatch)). Either way,
+address `dmip_send()`; receiving claims UDP's IP protocol number by
+implementing dmip's protocol handler DIF rather than pulling packets from
+dmip directly - dmip dispatches by protocol number (see
+[dmip.md](../../dmip/docs/dmip.md#protocol-dispatch)). Either way,
 dmudp itself never talks to dmroute, dmarp, or dmnetif directly for
 anything - dmip (and, below it, dmnetbridge) already does all of that
 (route lookup, ARP resolution, frame I/O, fragmentation). Building UDP as
@@ -25,7 +25,7 @@ functions bolted onto dmip.
 ├──────────────────────────────────────────────┤
 │         DMIP                    │   DMICMP    │
 │   dmip_send(), dmip_checksum(), │   Port      │
-│   protocol registration         │   Unreachable│
+│   protocol handler DIF          │   Unreachable│
 ├──────────────────────────────────────────────┤
 │      DMNETBRIDGE / DMROUTE / DMNETIF / DMARP  │
 └──────────────────────────────────────────────┘
@@ -67,18 +67,18 @@ identifier.
 
 ## No extra thread needed to deliver a datagram
 
-`dmip_register_protocol()`'s callback already runs on whatever thread is
-pumping the interface a packet arrived on (see `dmip_protocol_handler_t`
-in `dmip.h`) - the same thread `dmnetbridge_handle_netif_rx()` uses.
-`dmudp_handle_ip_packet()` parses and checksum-validates the segment on
-that same thread, looks up the bound handler for its destination port, and
-- if one is registered - calls it **right there, inline**, the same
+dmip's `dmip_protocol_receive()` DIF already runs on whatever thread is
+pumping the interface a packet arrived on (see dmip.h's "Protocol handler
+DIF" section) - the same thread `dmnetbridge_handle_netif_rx()` uses.
+dmudp's implementation parses and checksum-validates the segment on that
+same thread, looks up the bound handler for its destination port, and -
+if one is registered - calls it **right there, inline**, the same
 reasoning [dmicmp.md](../../dmicmp/docs/dmicmp.md#no-extra-thread-needed-to-answer-a-ping)
 gives for answering an Echo Request without a queue or worker thread. A
 handler that wants to reply can just call `dmudp_send()` back from inside
 itself, synchronously, in the same call. A handler that needs the payload
 to outlive the call must copy it out itself - it is only valid for the
-call's duration, the same borrowing rule `dmip_protocol_handler_t` itself
+call's duration, the same borrowing rule `dmip_protocol_receive()` itself
 documents.
 
 ## An unbound port gets a Port Unreachable, not silence
@@ -172,10 +172,10 @@ module runtime gives no struct-packing guarantee.
 
 ## Dependencies
 
-- `dmip` - `dmip_send()` for transmit, `dmip_register_protocol()`/
-  `_unregister_protocol()` to receive, plus `dmip_checksum()` for the
-  pseudo-header checksum and `dmip_v4_get_source_address()`/
-  `_v4_next_identification()`
+- `dmip` - `dmip_send()` for transmit, dmip's protocol handler DIF
+  (`dmip_protocol_receive()`/`_protocol_numbers()`) to receive, plus
+  `dmip_checksum()` for the pseudo-header checksum and
+  `dmip_v4_get_source_address()`/`_v4_next_identification()`
 - `dmicmp` - `dmicmp_v4_send_dest_unreachable()`, to report a datagram
   addressed to an unbound port back to its sender as a Port Unreachable
 - `dmroute` - header-only: `dmip_addr_t`'s real definition
