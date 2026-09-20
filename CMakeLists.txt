@@ -50,8 +50,9 @@ set(DMOD_DMR_PATH           ${CMAKE_CURRENT_SOURCE_DIR}/dmudp.dmr)
 # List of MAL interfaces implemented by this module (leave empty if none)
 set(DMOD_MAL_IMPLS          )
 
-# List of DIF interfaces implemented by this module (leave empty if none)
-set(DMOD_DIF_IMPLS          )
+# List of DIF interfaces implemented by this module (leave empty if none) -
+# dmudp implements dmip's protocol handler DIF (see src/dmudp.c).
+set(DMOD_DIF_IMPLS          dmip)
 
 #
 #   dmod_add_library - create a library module
@@ -75,16 +76,17 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
 # dmip:    dmip_send()/_v4_send()/_v4_send_on_iface()/_v4_get_source_address()
 #          to transmit, dmip_checksum() for the pseudo-header checksum,
 #          dmip_v4_parse_header()/_v6_parse_header() to read the enclosing
-#          IP header, dmip_register_protocol()/_unregister_protocol() to
-#          receive (see src/dmudp.c).
+#          IP header, and dmip's protocol handler DIF
+#          (dmip_protocol_receive()/_protocol_numbers()) to receive (see
+#          src/dmudp.c and DMOD_DIF_IMPLS above).
 # dmicmp:  dmicmp_v4_send_dest_unreachable() - reports a datagram addressed
 #          to a port nobody's listening on back to its sender (Port
 #          Unreachable), instead of dmudp building the ICMP message itself.
 # dmroute: header-only - dmip.h needs dmroute_addr_t (re-exported as
 #          dmip_addr_t) directly, even though dmudp.c itself never calls a
 #          dmroute_* function.
-# dmnetif: dmnetif_iface_t, the iface parameter dmip_protocol_handler_t
-#          passes to dmudp_handle_ip_packet() and dmudp_datagram_handler_t
+# dmnetif: dmnetif_iface_t, the iface parameter dmip_protocol_receive()
+#          passes to dmudp's implementation and dmudp_datagram_handler_t
 #          passes on to a bound handler, plus dmnetif_get_ip_address() -
 #          called directly by dmudp_send_on_iface() to read the source
 #          address to checksum against (see dmudp.h).

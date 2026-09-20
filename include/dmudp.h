@@ -16,10 +16,10 @@ extern "C" {
  * @brief DMOD UDP - Public API
  *
  * dmudp builds/parses UDP segments (RFC 768) and plugs into dmip's
- * protocol dispatch the same way dmicmp does (see dmicmp.h): it registers
- * dmudp_handle_ip_packet() via dmip_register_protocol(DMIP_PROTO_UDP, ...)
- * in dmod_init() (see src/dmudp.c). Unlike dmicmp, there is no
- * dmip_register_default_protocol() registration here - claiming any IP
+ * protocol dispatch the same way dmicmp does (see dmicmp.h): it
+ * implements dmip's protocol handler DIF (dmip_protocol_receive()/
+ * _protocol_numbers(), see src/dmudp.c), claiming DMIP_PROTO_UDP. Unlike
+ * dmicmp, dmudp does not also claim DMIP_PROTO_DEFAULT - claiming any IP
  * protocol nobody else wants is exclusively dmicmp's job.
  *
  * Sending calls straight into dmip's family-agnostic-by-destination-address
@@ -33,7 +33,7 @@ extern "C" {
  * registry. dmudp_bind()/_bind_any() reserve a UDP port and register a
  * dmudp_datagram_handler_t for it; dmudp_unbind() releases one. A matching
  * inbound datagram's handler is called synchronously, inline, from whatever
- * thread is pumping the interface it arrived on (see dmip_protocol_handler_t
+ * thread is pumping the interface it arrived on (see dmip_protocol_receive
  * in dmip.h) - the same delivery context dmicmp's own inline Echo Reply
  * relies on, specifically so a handler can reply (e.g. call dmudp_send()
  * right back) without needing its own thread or queue.
@@ -198,7 +198,7 @@ dmod_dmudp_api(1.0, bool, _v6_checksum_valid, ( const dmip_addr_t* src_ip, const
  *        datagram addressed to the bound port
  *
  * Called inline, from whatever thread is pumping the interface the
- * datagram arrived on (see dmip_protocol_handler_t in dmip.h) - the same
+ * datagram arrived on (see dmip_protocol_receive in dmip.h) - the same
  * delivery context dmicmp's own inline Echo Reply relies on, specifically
  * so a handler can reply synchronously (e.g. call dmudp_send() right back)
  * without needing its own thread or queue. `payload` is only valid for the
