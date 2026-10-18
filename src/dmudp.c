@@ -471,9 +471,12 @@ static void dispatch_to_port(dmip_family_t family, dmnetif_iface_t iface, const 
     }
     else
     {
-        /* No ICMPv6 send capability yet - same gap dmicmp_handle_unclaimed_protocol()
+        /* Not a warning: a Wi-Fi / LAN with other hosts sends unsolicited IPv6
+         * multicast (SSDP 1900, mDNS 5353, ...) all the time, and dropping it
+         * silently is what a host without the port open does anyway.
+         * No ICMPv6 send capability yet - same gap dmicmp_handle_unclaimed_protocol()
          * documents for its own unclaimed-IPv6-protocol case. */
-        DMOD_LOG_WARN("dmudp: received IPv6 datagram for unbound port %u, cannot send ICMPv6 port-unreachable - no dmip_v6_send() yet\n", (unsigned)dst_port);
+        DMOD_LOG_VERBOSE("dmudp: received IPv6 datagram for unbound port %u, cannot send ICMPv6 port-unreachable - no dmip_v6_send() yet\n", (unsigned)dst_port);
     }
 }
 
